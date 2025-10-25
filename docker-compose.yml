@@ -1,0 +1,47 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: honeypot-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: cowrie
+      MYSQL_USER: cowrie
+      MYSQL_PASSWORD: cowriepassword
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - honeypot-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
+
+  cowrie:
+    image: cowrie/cowrie:latest
+    container_name: cowrie-honeypot
+    depends_on:
+      mysql:
+        condition: service_healthy
+    ports:
+      - "2222:2222"
+      - "2223:2223"
+    volumes:
+      - ./config/cowrie.cfg:/cowrie/cowrie-git/etc/cowrie.cfg
+      - cowrie-logs:/cowrie/cowrie-git/var/log/cowrie
+      - cowrie-data:/cowrie/cowrie-git/var/lib/cowrie
+    networks:
+      - honeypot-network
+
+volumes:
+  mysql-data:
+  cowrie-logs:
+  cowrie-data:
+
+networks:
+  honeypot-network:
+    driver: bridge
