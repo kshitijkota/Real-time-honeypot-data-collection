@@ -2,6 +2,14 @@
 """
 Cowrie to Custom Schema ETL Adapter
 Transfers data from Cowrie's MySQL database to your custom schema
+
+Modifications:
+- Added get_public_ip() and sanitize_ip() helpers.
+- sanitize_ip() replaces private/local IPs (127.*, 10.*, 172.*, 192.168.*)
+  with the machine's public IP (via https://api.ipify.org). If public IP
+  lookup fails, a mock external IP is generated so GeoIP lookups return
+  non-private results for visualization.
+- Minimal logging added when IPs are sanitized.
 """
 
 import mysql.connector
@@ -9,12 +17,61 @@ from mysql.connector import Error
 import requests
 import time
 import logging
+import random
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+
+def get_public_ip():
+    """Fetch the host's public IP address using a simple service."""
+    try:
+        resp = requests.get("https://api.ipify.org", timeout=5)
+        if resp.status_code == 200 and resp.text:
+            ip = resp.text.strip()
+            logger.debug(f"Fetched public IP: {ip}")
+            return ip
+    except Exception as e:
+        logger.warning(f"Could not fetch public IP: {e}")
+    return None
+
+
+def random_external_ip():
+    """
+    Generate a random (likely public) IPv4 address.
+    Avoids RFC1918 private ranges and common reserved addresses.
+    """
+    # choose first octet from common public ranges (11-223 excluding 127, 169, 172, 192)
+    first_octet = random.choice([i for i in range(11, 224) if i not in (127, 169, 172, 192)])
+    return f"{first_octet}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(0,255)}"
+
+
+def sanitize_ip(ip):
+    """
+    Replace private/local ips with a public or mock external ip.
+
+    Private ranges handled:
+      - 127.0.0.0/8
+      - 10.0.0.0/8
+      - 172.16.0.0/12  (we check prefix 172.)
+      - 192.168.0.0/16
+    """
+    if not ip:
+        return ip
+
+    private_prefixes = ("127.", "10.", "172.", "192.168.")
+    if ip.startswith(private_prefixes):
+        public_ip = get_public_ip()
+        if public_ip:
+            logger.info(f"Sanitizing private IP {ip} -> using public IP {public_ip}")
+            return public_ip
+        mock_ip = random_external_ip()
+        logger.info(f"Sanitizing private IP {ip} -> using mock external IP {mock_ip}")
+        return mock_ip
+    return ip
 
 
 class CowrieETLAdapter:
@@ -169,7 +226,8 @@ class CowrieETLAdapter:
             if cowrie_session_id in self.processed_sessions:
                 continue
 
-            ip_address = session["ip"]
+            raw_ip = session.get("ip")
+            ip_address = sanitize_ip(raw_ip) if raw_ip is not None else None
             start_time = session["starttime"]
             end_time = session["endtime"]
 
@@ -219,14 +277,14 @@ class CowrieETLAdapter:
 
         for auth in auth_attempts:
             status = "SUCCESS" if auth["success"] == 1 else "FAILURE"
-            method = f"{auth['username']}:{auth['password']}"
+            creds = f"{auth['username']}:{auth['password']}"
 
             query = """
-            INSERT INTO AUTH_ATTEMPT (session_id, timestamp, status, method)
+            INSERT INTO AUTH_ATTEMPT (session_id, timestamp, status, creds)
             VALUES (%s, %s, %s, %s)
             """
             dest_cursor.execute(
-                query, (new_session_id, auth["timestamp"], status, method)
+                query, (new_session_id, auth["timestamp"], status, creds)
             )
 
         source_cursor.close()
