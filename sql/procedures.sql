@@ -2,8 +2,8 @@ DELIMITER //
 CREATE PROCEDURE GetTopCredentials(IN limit_n INT)
 BEGIN
     SELECT 
-        SUBSTRING_INDEX(method, ':', 1) AS username,
-        SUBSTRING_INDEX(method, ':', -1) AS password,
+        SUBSTRING_INDEX(creds, ':', 1) AS username,
+        SUBSTRING_INDEX(creds, ':', -1) AS password,
         COUNT(*) AS attempts
     FROM AUTH_ATTEMPT
     GROUP BY username, password
