@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-gray-900">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Honeypot Dashboard</title>
+    <!-- 1. Include TailwindCSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 2. Include Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.7.0/dist/chart.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@2.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+
+    <style>
+        /* Custom scrollbar for tables */
+        .table-container::-webkit-scrollbar { width: 6px; }
+        .table-container::-webkit-scrollbar-track { background: #2d3748; }
+        .table-container::-webkit-scrollbar-thumb { background: #718096; border-radius: 3px; }
+    </style>
+</head>
+<body class="h-full">
+
+    <!-- Login Container -->
+    <div id="login-container" class="flex min-h-full flex-col justify-center items-center px-6 py-12 lg:px-8">
+        <div class="sm:mx-auto sm:w-full sm:max-w-sm">
+            <h2 class="mt-10 text-center text-3xl font-bold leading-9 tracking-tight text-white">Honeypot DBMS Dashboard</h2>
+            <h3 class="mt-2 text-center text-lg font-medium leading-9 tracking-tight text-gray-400">Please sign in to your role</h3>
+        </div>
+
+        <div class="mt-10 sm:mx-auto sm:w-full sm:max-w-sm">
+            <form id="login-form" class="space-y-6">
+                <div>
+                    <label for="username" class="block text-sm font-medium leading-6 text-white">Username (Role)</label>
+                    <div class="mt-2">
+                        <input id="username" name="username" type="text" required value="analyst" class="block w-full rounded-md border-0 bg-white/10 p-2.5 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500 sm:text-sm sm:leading-6">
+                        <p class="mt-1 text-xs text-gray-400">Try: `analyst` / `analystpass`</p>
+                        <p class="mt-1 text-xs text-gray-400">Or: `honeypot_admin` / `adminpass`</p>
+                    </div>
+                </div>
+
+                <div>
+                    <label for="password" class="block text-sm font-medium leading-6 text-white">Password</label>
+                    <div class="mt-2">
+                        <input id="password" name="password" type="password" required value="analystpass" class="block w-full rounded-md border-0 bg-white/10 p-2.5 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500 sm:text-sm sm:leading-6">
+                    </div>
+                </div>
+                
+                <div id="login-error" class="text-sm text-red-400" style="display: none;"></div>
+
+                <div>
+                    <button type="submit" class="flex w-full justify-center rounded-md bg-indigo-500 px-3 py-1.5 text-sm font-semibold leading-6 text-white shadow-sm hover:bg-indigo-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500">
+                        Sign in
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Dashboard Container (Main App) -->
+    <div id="dashboard-container" class="min-h-full" style="display: none;">
+        <nav class="bg-gray-800">
+            <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+                <div class="flex h-16 items-center justify-between">
+                    <div class="flex items-center">
+                        <div class="text-white font-bold text-lg">Honeypot Dashboard</div>
+                    </div>
+                    <div class="flex items-center">
+                        <div class="text-gray-400 text-sm mr-3">
+                            Logged in as: <span id="user-role" class="font-medium text-white"></span>
+                        </div>
+                        <button id="logout-button" class="rounded-md bg-indigo-500 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-400">
+                            Log Out
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </nav>
+
+        <header class="bg-gray-800 shadow-inner shadow-gray-900/50">
+            <div class="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+                <h1 class="text-3xl font-bold tracking-tight text-white">Dashboard</h1>
+            </div>
+        </header>
+        <main class="bg-gray-900">
+            <div class="mx-auto max-w-7xl py-6 sm:px-6 lg:px-8">
+                
+                <!-- Admin Panel (Role-Based) -->
+                <div id="admin-panel" class="mb-6 rounded-lg bg-gray-800 shadow-lg" style="display: none;">
+                    <div class="px-4 py-5 sm:p-6">
+                        <h3 class="text-lg font-medium leading-6 text-rose-400">Admin Panel (DBMS Privileges Demo)</h3>
+                        <p class="mt-2 text-sm text-gray-300">As an admin, you have `DELETE` privileges. You can remove an attacker and all their associated data.</p>
+                        <div class="mt-4 flex gap-4">
+                            <input type="text" id="delete-ip-input" placeholder="Enter Attacker IP to delete" class="block w-full rounded-md border-0 bg-white/10 p-2.5 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500 sm:text-sm">
+                            <button id="delete-ip-button" class="rounded-md bg-rose-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-rose-500">Delete Attacker</button>
+                        </div>
+                        <div id="admin-message" class="mt-3 text-sm"></div>
+                    </div>
+                </div>
+
+                <!-- Main Dashboard Grid -->
+                <div class="grid grid-cols-1 gap-6 lg:grid-cols-3">
+                    
+                    <!-- Card 1: Top Countries -->
+                    <div class="lg:col-span-1 rounded-lg bg-gray-800 shadow-lg">
+                        <div class="px-4 py-5 sm:p-6">
+                            <h3 class="text-base font-semibold text-white">1. Top Attacker Countries</h3>
+                            <div class="mt-4 h-64"><canvas id="chart-top-countries"></canvas></div>
+                        </div>
+                    </div>
+
+                    <!-- Card 2: Auth Stats -->
+                    <div class="lg:col-span-1 rounded-lg bg-gray-800 shadow-lg">
+                        <div class="px-4 py-5 sm:p-6">
+                            <h3 class="text-base font-semibold text-white">4. Auth Success vs. Failure</h3>
+                            <div class="mt-4 h-64"><canvas id="chart-auth-stats"></canvas></div>
+                        </div>
+                    </div>
+
+                    <!-- Card 3: Top Credentials -->
+                    <div class="lg:col-span-1 rounded-lg bg-gray-800 shadow-lg">
+                        <div class="px-4 py-5 sm:p-6">
+                            <h3 class="text-base font-semibold text-white">2. Top Credentials Used</h3>
+                            <div class="mt-4 h-64 overflow-y-auto table-container">
+                                <table class="min-w-full divide-y divide-gray-700">
+                                    <thead class="bg-gray-700"><tr>
+                                        <th class="px-3 py-2 text-left text-xs font-medium text-gray-300 uppercase">Username</th>
+                                        <th class="px-3 py-2 text-left text-xs font-medium text-gray-300 uppercase">Password</th>
+                                        <th class="px-3 py-2 text-left text-xs font-medium text-gray-300 uppercase">Attempts</th>
+                                    </tr></thead>
+                                    <tbody id="table-top-credentials" class="divide-y divide-gray-700 text-gray-300">
+                                        <!-- Data injected by JS -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Card 4: Attack Trends -->
+                    <div class="lg:col-span-3 rounded-lg bg-gray-800 shadow-lg">
+                        <div class="px-4 py-5 sm:p-6">
+                            <h3 class="text-base font-semibold text-white">3. Attack Frequency Over Time</h3>
+                            <div class="mt-4 h-80"><canvas id="chart-attack-trends"></canvas></div>
+                        </div>
+                    </div>
+                    
+                    <!-- Card 5: Command Frequency (INTERACTIVE) -->
+                    <div class="lg:col-span-3 rounded-lg bg-gray-800 shadow-lg">
+                        <div class="px-4 py-5 sm:p-6">
+                            <h3 class="text-base font-semibold text-white">6. Command Frequency per Attacker</h3>
+                            <p class="mt-1 text-sm text-gray-400">Showcases stored procedure with `IN` parameter.</p>
+                            <div class="mt-4 flex gap-4">
+                                <input type="text" id="ip-input" placeholder="Enter Attacker IP (e.g., from table below)" class="block w-full rounded-md border-0 bg-white/10 p-2.5 text-white shadow-sm ring-1 ring-inset ring-white/10 focus:ring-2 focus:ring-inset focus:ring-indigo-500 sm:text-sm">
+                                <button id="ip-submit-button" class="rounded-md bg-indigo-500 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-400">Get Commands</button>
+                            </div>
+                            <div id="command-results" class="mt-4" style="display: none;">
+                                <h4 class="text-sm font-medium text-white">Results for <span id="command-ip" class="font-bold"></span></h4>
+                                <div class="mt-2 h-48 overflow-y-auto table-container">
+                                    <table class="min-w-full divide-y divide-gray-700">
+                                        <thead class="bg-gray-700"><tr>
+                                            <th class="px-3 py-2 text-left text-xs font-medium text-gray-300 uppercase">Command</th>
+                                            <th class="px-3 py-2 text-left text-xs font-medium text-gray-300 uppercase">Frequency</th>
+                                        </tr></thead>
+                                        <tbody id="table-command-freq" class="divide-y divide-gray-700 text-gray-300"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Card 6: Top Malware -->
+                    <div class="lg:col-span-1 rounded-lg bg-gray-800 shadow-lg">
+                        <div class="px-4 py-5 sm:p-6">
+                            <h3 class="text-base font-semibold text-white">5. Top Malware Hashes (View)</h3>
+                            <div class="mt-4 h-72 overflow-y-auto table-container">
+                                <table class="min-w-full divide-y divide-gray-700">
+                                    <thead class="bg-gray-700"><tr>
+                                        <th class="px-3 py-2 text-left text-xs font-medium text-gray-300 uppercase">File Hash (SHA256)</th>
+                                        <th class="px-3 py-2 text-left text-xs font-medium text-gray-300 uppercase">Count</th>
+                                    </tr></thead>
+                                    <tbody id="table-top-malware" class="divide-y divide-gray-700 text-gray-300"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Card 7: Attacker Rankings -->
+                    <div class="lg:col-span-1 rounded-lg bg-gray-800 shadow-lg">
+                        <div class="px-4 py-5 sm:p-6">
+                            <h3 class="text-base font-semibold text-white">9. Attacker Rankings (Window Fn)</h3>
+                            <div class="mt-4 h-72 overflow-y-auto table-container">
+                                <table class="min-w-full divide-y divide-gray-700">
+                                    <thead class="bg-gray-700"><tr>
+                                        <th class="px-3 py-2 text-left text-xs font-medium text-gray-300 uppercase">Rank</th>
+                                        <th class="px-3 py-2 text-left text-xs font-medium text-gray-300 uppercase">IP Address</th>
+                                        <th class="px-3 py-2 text-left text-xs font-medium text-gray-300 uppercase">Sessions</th>
+                                    </tr></thead>
+                                    <tbody id="table-attacker-rankings" class="divide-y divide-gray-700 text-gray-300"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Card 8: Active Attackers -->
+                    <div class="lg:col-span-1 rounded-lg bg-gray-800 shadow-lg">
+                        <div class="px-4 py-5 sm:p-6">
+                            <h3 class="text-base font-semibold text-white">8. Active Attackers (Subquery)</h3>
+                            <div class="mt-4 h-72 overflow-y-auto table-container">
+                                <table class="min-w-full divide-y divide-gray-700">
+                                    <thead class="bg-gray-700"><tr>
+                                        <th class="px-3 py-2 text-left text-xs font-medium text-gray-300 uppercase">IP Address</th>
+                                        <th class="px-3 py-2 text-left text-xs font-medium text-gray-300 uppercase">Country</th>
+                                    </tr></thead>
+                                    <tbody id="table-active-attackers" class="divide-y divide-gray-700 text-gray-300"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Card 9: Avg Session -->
+                    <div class="lg:col-span-2 rounded-lg bg-gray-800 shadow-lg">
+                        <div class="px-4 py-5 sm:p-6">
+                            <h3 class="text-base font-semibold text-white">7. Avg Session Duration (Mins)</h3>
+                            <div class="mt-4 h-80"><canvas id="chart-avg-session"></canvas></div>
+                        </div>
+                    </div>
+                    
+                    <!-- Card 10: Hourly Trends -->
+                    <div class="lg:col-span-1 rounded-lg bg-gray-800 shadow-lg">
+                        <div class="px-4 py-5 sm:p-6">
+                            <h3 class="text-base font-semibold text-white">10. Hourly Attack Frequency</h3>
+                            <div class="mt-4 h-80"><canvas id="chart-hourly-trends"></canvas></div>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        // --- CHART.JS HELPERS ---
+        const chartInstances = {};
+        function createOrUpdateChart(ctx, type, data, options) {
+            if (chartInstances[ctx]) {
+                chartInstances[ctx].destroy();
+            }
+            chartInstances[ctx] = new Chart(document.getElementById(ctx), { type, data, options });
+        }
+        const chartColors = {
+            blue: 'rgba(59, 130, 246, 0.7)',
+            red: 'rgba(239, 68, 68, 0.7)',
+            green: 'rgba(16, 185, 129, 0.7)',
+            yellow: 'rgba(245, 158, 11, 0.7)',
+            purple: 'rgba(139, 92, 246, 0.7)',
+            orange: 'rgba(249, 115, 22, 0.7)',
+        };
+        const chartOptions = {
+            maintainAspectRatio: false,
+            responsive: true,
+            plugins: { legend: { labels: { color: '#d1d5db' } } },
+            scales: {
+                y: { ticks: { color: '#9ca3af' }, grid: { color: '#4b5563' } },
+                x: { ticks: { color: '#9ca3af' }, grid: { color: '#4b5563' } }
+            }
+        };
+        const timeChartOptions = {
+            ...chartOptions,
+            scales: {
+                ...chartOptions.scales,
+                x: { ...chartOptions.scales.x, type: 'time', time: { unit: 'day' } }
+            }
+        };
+
+        // --- API & RENDERING ---
+        
+        /**
+         * Generic data fetcher. Handles 401 Unauthorized automatically.
+         */
+        async function fetchData(url) {
+            const response = await fetch(url);
+            if (!response.ok) {
+                if (response.status === 401) {
+                    // Session expired or invalid
+                    await handleLogout(false); // Do a "soft" logout
+                }
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            return response.json();
+        }
+
+        /**
+         * Renders simple key-value data into a table.
+         * @param {string} tableId - The ID of the <tbody> element
+         * @param {Array<Object>} data - The array of data from the API
+         * @param {Array<string>} columns - An array of object keys to render
+         */
+        function renderTable(tableId, data, columns) {
+            const tableBody = document.getElementById(tableId);
+            tableBody.innerHTML = ''; // Clear old data
+            if (data.length === 0) {
+                tableBody.innerHTML = `<tr><td colspan="${columns.length}" class="px-3 py-2 text-center text-gray-500">No data found.</td></tr>`;
+                return;
+            }
+            data.forEach(row => {
+                const tr = document.createElement('tr');
+                tr.className = "hover:bg-gray-700/50";
+                columns.forEach(col => {
+                    const td = document.createElement('td');
+                    td.className = "px-3 py-2 text-sm whitespace-nowrap";
+                    td.textContent = row[col];
+                    tr.appendChild(td);
+                });
+                tableBody.appendChild(tr);
+            });
+        }
+
+        // --- CHART LOADING FUNCTIONS ---
+
+        async function loadTopCountries() {
+            const data = await fetchData('/api/query/top-countries');
+            createOrUpdateChart('chart-top-countries', 'bar', {
+                labels: data.map(d => d.country),
+                datasets: [{ 
+                    label: 'Total Sessions', 
+                    data: data.map(d => d.total_sessions),
+                    backgroundColor: [chartColors.blue, chartColors.red, chartColors.green, chartColors.yellow, chartColors.purple, chartColors.orange]
+                }]
+            }, { ...chartOptions, scales: { ...chartOptions.scales, x: { ...chartOptions.scales.x, display: false } } });
+        }
+        
+        async function loadAuthStats() {
+            const data = await fetchData('/api/query/auth-stats');
+            createOrUpdateChart('chart-auth-stats', 'doughnut', {
+                labels: data.map(d => d.status),
+                datasets: [{ 
+                    data: data.map(d => d.total),
+                    backgroundColor: [chartColors.red, chartColors.green]
+                }]
+            }, { ...chartOptions, scales: { y: {display: false}, x: {display: false} } });
+        }
+
+        async function loadTopCredentials() {
+            const data = await fetchData('/api/query/top-credentials');
+            renderTable('table-top-credentials', data, ['username', 'password', 'attempts']);
+        }
+        
+        async function loadAttackTrends() {
+            const data = await fetchData('/api/query/attack-trends');
+            createOrUpdateChart('chart-attack-trends', 'line', {
+                labels: data.map(d => new Date(d.day)),
+                datasets: [
+                    { label: 'Total Sessions', data: data.map(d => d.total_sessions), borderColor: chartColors.blue, tension: 0.1 },
+                    { label: 'Total Auth Attempts', data: data.map(d => d.total_auth_attempts), borderColor: chartColors.red, tension: 0.1 }
+                ]
+            }, timeChartOptions);
+        }
+
+        async function loadTopMalware() {
+            const data = await fetchData('/api/query/top-malware');
+            renderTable('table-top-malware', data, ['filehash', 'times_downloaded']);
+        }
+        
+        async function loadAttackerRankings() {
+            const data = await fetchData('/api/query/attacker-rankings');
+            renderTable('table-attacker-rankings', data, ['rank_by_sessions', 'ip_address', 'total_sessions']);
+        }
+
+        async function loadActiveAttackers() {
+            const data = await fetchData('/api/query/active-attackers');
+            renderTable('table-active-attackers', data, ['ip_address', 'country']);
+        }
+        
+        async function loadAvgSession() {
+            const data = await fetchData('/api/query/avg-session-duration');
+            createOrUpdateChart('chart-avg-session', 'bar', {
+                labels: data.map(d => d.country),
+                datasets: [{ 
+                    label: 'Avg. Duration (Mins)', 
+                    data: data.map(d => d.avg_duration_mins),
+                    backgroundColor: chartColors.purple
+                }]
+            }, { ...chartOptions, indexAxis: 'y' });
+        }
+
+        async function loadHourlyTrends() {
+            const data = await fetchData('/api/query/hourly-trends');
+            createOrUpdateChart('chart-hourly-trends', 'bar', {
+                labels: data.map(d => new Date(d.hour_slot).getHours() + ':00'),
+                datasets: [{ 
+                    label: 'Total Attempts', 
+                    data: data.map(d => d.total_attempts),
+                    backgroundColor: chartColors.orange 
+                }]
+            }, chartOptions);
+        }
+
+        async function loadAllCharts() {
+            try {
+                // Run all data fetches in parallel
+                await Promise.all([
+                    loadTopCountries(),
+                    loadAuthStats(),
+                    loadTopCredentials(),
+                    loadAttackTrends(),
+                    loadTopMalware(),
+                    loadAttackerRankings(),
+                    loadActiveAttackers(),
+                    loadAvgSession(),
+                    loadHourlyTrends()
+                ]);
+            } catch (error) {
+                console.error('Error loading dashboard data:', error);
+                // If any fetch fails (e.g., 401), the handler will redirect to login.
+            }
+        }
+
+        // --- INTERACTIVE HANDLERS ---
+        
+        async function handleCommandFrequencySubmit() {
+            const ip = document.getElementById('ip-input').value;
+            if (!ip) return;
+            
+            try {
+                const data = await fetchData(`/api/query/command-frequency?ip=${encodeURIComponent(ip)}`);
+                document.getElementById('command-ip').textContent = ip;
+                renderTable('table-command-freq', data, ['command_text', 'frequency']);
+                document.getElementById('command-results').style.display = 'block';
+            } catch (error) {
+                console.error('Error getting command frequency:', error);
+                alert('Could not fetch command data. Check IP and try again.');
+            }
+        }
+        
+        async function handleDeleteAttackerSubmit() {
+            const ip = document.getElementById('delete-ip-input').value;
+            if (!ip) return;
+            
+            if (!confirm(`Are you sure you want to delete ALL data for attacker ${ip}? This action cannot be undone.`)) {
+                return;
+            }
+
+            const adminMsg = document.getElementById('admin-message');
+            adminMsg.className = 'mt-3 text-sm text-yellow-400';
+            adminMsg.textContent = 'Deleting...';
+            
+            try {
+                const response = await fetch('/api/admin/delete-attacker', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ip: ip })
+                });
+                
+                const result = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(result.error || 'An unknown error occurred.');
+                }
+                
+                adminMsg.className = 'mt-3 text-sm text-green-400';
+                adminMsg.textContent = result.message;
+                // Refresh data to show the deletion
+                loadAllCharts();
+            } catch (error) {
+                adminMsg.className = 'mt-3 text-sm text-red-400';
+                adminMsg.textContent = `Error: ${error.message}`;
+                console.error('Error deleting attacker:', error);
+            }
+        }
+
+
+        // --- AUTH & PAGE LOGIC ---
+
+        /**
+         * Builds the dashboard UI based on the user's role.
+         */
+        function buildDashboard(role) {
+            document.getElementById('user-role').textContent = role;
+            
+            // Show/Hide Admin Panel based on role
+            const adminPanel = document.getElementById('admin-panel');
+            if (role === 'admin') {
+                adminPanel.style.display = 'block';
+            } else {
+                adminPanel.style.display = 'none';
+            }
+
+            // Show dashboard, hide login
+            document.getElementById('login-container').style.display = 'none';
+            document.getElementById('dashboard-container').style.display = 'block';
+            
+            // Load all data
+            loadAllCharts();
+        }
+
+        /**
+         * Handles the login form submission.
+         */
+        async function handleLogin(event) {
+            event.preventDefault();
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            const errorDiv = document.getElementById('login-error');
+            
+            try {
+                const response = await fetch('/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    errorDiv.style.display = 'none';
+                    buildDashboard(data.role);
+                } else {
+                    throw new Error(data.error);
+                }
+            } catch (error) {
+                errorDiv.textContent = `Login failed: ${error.message}`;
+                errorDiv.style.display = 'block';
+            }
+        }
+
+        /**
+         * Handles logging out.
+         */
+        async function handleLogout(showAlert = true) {
+            await fetch('/logout', { method: 'POST' });
+            if (showAlert) {
+                alert('You have been logged out.');
+            }
+            window.location.reload(); // Easiest way to reset state
+        }
+        
+        /**
+         * Checks if the user has an active session on page load.
+         */
+        async function checkSession() {
+            try {
+                const data = await fetchData('/api/session');
+                if (data.loggedIn) {
+                    buildDashboard(data.role);
+                } else {
+                    // Not logged in, show login form
+                    document.getElementById('login-container').style.display = 'flex';
+                    document.getElementById('dashboard-container').style.display = 'none';
+                }
+            } catch (error) {
+                console.error('Session check failed', error);
+                document.getElementById('login-container').style.display = 'flex';
+                document.getElementById('dashboard-container').style.display = 'none';
+            }
+        }
+
+        // --- Event Listeners ---
+        document.addEventListener('DOMContentLoaded', () => {
+            // Auth Listeners
+            document.getElementById('login-form').addEventListener('submit', handleLogin);
+            document.getElementById('logout-button').addEventListener('click', handleLogout);
+
+            // Interactive Listeners
+            document.getElementById('ip-submit-button').addEventListener('click', handleCommandFrequencySubmit);
+            document.getElementById('delete-ip-button').addEventListener('click', handleDeleteAttackerSubmit);
+
+            // Initial Page Load
+            checkSession();
+        });
+
+    </script>
+</body>
+</html>

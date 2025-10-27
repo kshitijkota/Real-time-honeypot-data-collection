@@ -424,10 +424,10 @@ def main():
 
     try:
         # Option 1: Run once
-        adapter.run_once()
+        #adapter.run_once()
 
         # Option 2: Run continuously (uncomment to use)
-        # adapter.run_continuous(interval=30)
+        adapter.run_continuous(interval=30)
 
     except KeyboardInterrupt:
         logger.info("\n⏸️  Stopping ETL adapter...")
