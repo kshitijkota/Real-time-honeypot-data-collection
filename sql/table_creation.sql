@@ -12,7 +12,7 @@ CREATE TABLE ATTACKER (
     attacker_id INT PRIMARY KEY AUTO_INCREMENT,
     ip_address VARCHAR(45) UNIQUE NOT NULL,
     geoip_id INT,
-    FOREIGN KEY (geoip_id) REFERENCES GEOIP_CACHE(geoip_id) 
+    FOREIGN KEY (geoip_id) REFERENCES GEOIP_CACHE(geoip_id)
         ON DELETE SET NULL
 );
 
@@ -74,3 +74,4 @@ CREATE TABLE ATTACK_TRENDS (
     total_auth_attempts INT
 );
 
+ALTER TABLE SESSION ADD COLUMN cowrie_session_id VARCHAR(50) UNIQUE;

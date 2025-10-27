@@ -1,15 +1,7 @@
 #!/usr/bin/env python3
 """
-Cowrie to Custom Schema ETL Adapter
-Transfers data from Cowrie's MySQL database to your custom schema
-
-Modifications:
-- Added get_public_ip() and sanitize_ip() helpers.
-- sanitize_ip() replaces private/local IPs (127.*, 10.*, 172.*, 192.168.*)
-  with the machine's public IP (via https://api.ipify.org). If public IP
-  lookup fails, a mock external IP is generated so GeoIP lookups return
-  non-private results for visualization.
-- Minimal logging added when IPs are sanitized.
+Cowrie to Custom Schema ETL Adapter - FINAL FIXED VERSION
+Properly handles new sessions and updates existing ones with new commands
 """
 
 import mysql.connector
@@ -32,7 +24,6 @@ def get_public_ip():
         resp = requests.get("https://api.ipify.org", timeout=5)
         if resp.status_code == 200 and resp.text:
             ip = resp.text.strip()
-            logger.debug(f"Fetched public IP: {ip}")
             return ip
     except Exception as e:
         logger.warning(f"Could not fetch public IP: {e}")
@@ -40,25 +31,15 @@ def get_public_ip():
 
 
 def random_external_ip():
-    """
-    Generate a random (likely public) IPv4 address.
-    Avoids RFC1918 private ranges and common reserved addresses.
-    """
-    # choose first octet from common public ranges (11-223 excluding 127, 169, 172, 192)
-    first_octet = random.choice([i for i in range(11, 224) if i not in (127, 169, 172, 192)])
+    """Generate a random (likely public) IPv4 address."""
+    first_octet = random.choice(
+        [i for i in range(11, 224) if i not in (127, 169, 172, 192)]
+    )
     return f"{first_octet}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(0,255)}"
 
 
 def sanitize_ip(ip):
-    """
-    Replace private/local ips with a public or mock external ip.
-
-    Private ranges handled:
-      - 127.0.0.0/8
-      - 10.0.0.0/8
-      - 172.16.0.0/12  (we check prefix 172.)
-      - 192.168.0.0/16
-    """
+    """Replace private/local ips with a public or mock external ip."""
     if not ip:
         return ip
 
@@ -66,37 +47,25 @@ def sanitize_ip(ip):
     if ip.startswith(private_prefixes):
         public_ip = get_public_ip()
         if public_ip:
-            logger.info(f"Sanitizing private IP {ip} -> using public IP {public_ip}")
             return public_ip
         mock_ip = random_external_ip()
-        logger.info(f"Sanitizing private IP {ip} -> using mock external IP {mock_ip}")
         return mock_ip
     return ip
 
 
 class CowrieETLAdapter:
     def __init__(self, source_config, dest_config):
-        """
-        Initialize ETL adapter with source (Cowrie) and destination configs
-
-        Args:
-            source_config: dict with Cowrie DB connection details
-            dest_config: dict with destination DB connection details
-        """
         self.source_config = source_config
         self.dest_config = dest_config
         self.source_conn = None
         self.dest_conn = None
-        self.processed_sessions = set()
 
     def connect_databases(self):
         """Establish connections to both databases"""
         try:
-            # Connect to Cowrie database
             self.source_conn = mysql.connector.connect(**self.source_config)
             logger.info("✅ Connected to Cowrie database")
 
-            # Connect to destination database
             self.dest_conn = mysql.connector.connect(**self.dest_config)
             logger.info("✅ Connected to destination database")
 
@@ -106,17 +75,8 @@ class CowrieETLAdapter:
             return False
 
     def get_geoip_info(self, ip_address):
-        """
-        Fetch geolocation info for an IP address using free API
-
-        Args:
-            ip_address: IP address string
-
-        Returns:
-            dict with country, region, city, asn
-        """
+        """Fetch geolocation info for an IP address using free API"""
         try:
-            # Using free ip-api.com service (no key needed)
             response = requests.get(f"http://ip-api.com/json/{ip_address}", timeout=5)
             if response.status_code == 200:
                 data = response.json()
@@ -137,18 +97,10 @@ class CowrieETLAdapter:
         return {"country": "Unknown", "region": None, "city": None, "asn": None}
 
     def insert_or_get_geoip(self, ip_address):
-        """
-        Insert or retrieve GeoIP info
-
-        Returns:
-            geoip_id (int)
-        """
+        """Insert or retrieve GeoIP info"""
         cursor = self.dest_conn.cursor()
-
-        # Get GeoIP info
         geo_info = self.get_geoip_info(ip_address)
 
-        # Insert into GEOIP_CACHE
         query = """
         INSERT INTO GEOIP_CACHE (country, region, city, asn)
         VALUES (%s, %s, %s, %s)
@@ -165,19 +117,12 @@ class CowrieETLAdapter:
 
         geoip_id = cursor.lastrowid
         cursor.close()
-
         return geoip_id
 
     def insert_or_get_attacker(self, ip_address):
-        """
-        Insert or retrieve attacker by IP
-
-        Returns:
-            attacker_id (int)
-        """
+        """Insert or retrieve attacker by IP"""
         cursor = self.dest_conn.cursor()
 
-        # Check if attacker exists
         cursor.execute(
             "SELECT attacker_id FROM ATTACKER WHERE ip_address = %s", (ip_address,)
         )
@@ -187,10 +132,8 @@ class CowrieETLAdapter:
             cursor.close()
             return result[0]
 
-        # Get or create GeoIP entry
         geoip_id = self.insert_or_get_geoip(ip_address)
 
-        # Insert new attacker
         query = """
         INSERT INTO ATTACKER (ip_address, geoip_id)
         VALUES (%s, %s)
@@ -199,7 +142,7 @@ class CowrieETLAdapter:
         attacker_id = cursor.lastrowid
 
         cursor.close()
-        logger.info(f"📍 New attacker: {ip_address} from {geoip_id}")
+        logger.info(f"📍 New attacker: {ip_address} (ID: {attacker_id})")
 
         return attacker_id
 
@@ -208,24 +151,57 @@ class CowrieETLAdapter:
         source_cursor = self.source_conn.cursor(dictionary=True)
         dest_cursor = self.dest_conn.cursor()
 
-        # Get new sessions from Cowrie
+        # Check if cowrie_session_id column exists
+        dest_cursor.execute(
+            """
+            SELECT COUNT(*)
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = 'honeypot_data'
+            AND TABLE_NAME = 'SESSION'
+            AND COLUMN_NAME = 'cowrie_session_id'
+        """
+        )
+
+        has_cowrie_id_column = dest_cursor.fetchone()[0] > 0
+
+        if not has_cowrie_id_column:
+            logger.warning("⚠️  cowrie_session_id column doesn't exist.")
+            logger.warning(
+                "⚠️  Run: ALTER TABLE SESSION ADD COLUMN cowrie_session_id VARCHAR(50) UNIQUE;"
+            )
+            dest_cursor.execute(
+                """
+                SELECT s.session_id, s.attacker_id, s.start_time
+                FROM SESSION s
+            """
+            )
+            existing_sessions = {
+                (row[1], row[2]): row[0] for row in dest_cursor.fetchall()
+            }
+        else:
+            # Use Cowrie session IDs for tracking (proper method)
+            dest_cursor.execute(
+                "SELECT session_id, cowrie_session_id FROM SESSION WHERE cowrie_session_id IS NOT NULL"
+            )
+            existing_sessions = {row[1]: row[0] for row in dest_cursor.fetchall()}
+
+        logger.info(f"🔍 Found {len(existing_sessions)} existing session records")
+
+        # Get sessions from Cowrie - ORDER BY ASC to process oldest first
         query = """
         SELECT id, ip, starttime, endtime
         FROM sessions
-        ORDER BY starttime DESC
+        ORDER BY starttime ASC
         """
         source_cursor.execute(query)
         sessions = source_cursor.fetchall()
+        logger.info(f"📥 Found {len(sessions)} total sessions in Cowrie DB")
 
         transferred = 0
+        updated = 0
 
         for session in sessions:
             cowrie_session_id = session["id"]
-
-            # Skip if already processed
-            if cowrie_session_id in self.processed_sessions:
-                continue
-
             raw_ip = session.get("ip")
             ip_address = sanitize_ip(raw_ip) if raw_ip is not None else None
             start_time = session["starttime"]
@@ -234,37 +210,82 @@ class CowrieETLAdapter:
             # Get or create attacker
             attacker_id = self.insert_or_get_attacker(ip_address)
 
-            # Insert session
-            query = """
-            INSERT INTO SESSION (attacker_id, start_time, end_time)
-            VALUES (%s, %s, %s)
-            """
-            dest_cursor.execute(query, (attacker_id, start_time, end_time))
-            new_session_id = dest_cursor.lastrowid
+            # Check if session exists and get its ID
+            existing_session_id = None
+            if has_cowrie_id_column:
+                existing_session_id = existing_sessions.get(cowrie_session_id)
+            else:
+                existing_session_id = existing_sessions.get((attacker_id, start_time))
 
-            # Transfer auth attempts for this session
-            self.transfer_auth_attempts(cowrie_session_id, new_session_id)
+            if existing_session_id:
+                # Session exists - update it with new commands/auth/downloads
+                logger.info(
+                    f"🔄 Updating session {cowrie_session_id} (ID: {existing_session_id})"
+                )
 
-            # Transfer commands for this session
-            self.transfer_commands(cowrie_session_id, new_session_id)
+                # Update end_time if it changed
+                if end_time:
+                    dest_cursor.execute(
+                        "UPDATE SESSION SET end_time = %s WHERE session_id = %s",
+                        (end_time, existing_session_id),
+                    )
 
-            # Transfer downloads for this session
-            self.transfer_downloads(cowrie_session_id, new_session_id)
+                # Transfer new data for this session
+                self.transfer_auth_attempts(cowrie_session_id, existing_session_id)
+                self.transfer_commands(cowrie_session_id, existing_session_id)
+                self.transfer_downloads(cowrie_session_id, existing_session_id)
+                updated += 1
+            else:
+                # New session - insert it
+                logger.info(f"✨ New session found: {cowrie_session_id}")
 
-            self.processed_sessions.add(cowrie_session_id)
-            transferred += 1
+                if has_cowrie_id_column:
+                    query = """
+                    INSERT INTO SESSION (attacker_id, start_time, end_time, cowrie_session_id)
+                    VALUES (%s, %s, %s, %s)
+                    """
+                    dest_cursor.execute(
+                        query, (attacker_id, start_time, end_time, cowrie_session_id)
+                    )
+                else:
+                    query = """
+                    INSERT INTO SESSION (attacker_id, start_time, end_time)
+                    VALUES (%s, %s, %s)
+                    """
+                    dest_cursor.execute(query, (attacker_id, start_time, end_time))
+
+                new_session_id = dest_cursor.lastrowid
+                logger.info(
+                    f"✅ Created session {cowrie_session_id} as ID {new_session_id}"
+                )
+
+                # Transfer related data
+                self.transfer_auth_attempts(cowrie_session_id, new_session_id)
+                self.transfer_commands(cowrie_session_id, new_session_id)
+                self.transfer_downloads(cowrie_session_id, new_session_id)
+
+                transferred += 1
 
         self.dest_conn.commit()
         source_cursor.close()
         dest_cursor.close()
 
-        logger.info(f"✅ Transferred {transferred} new sessions")
+        logger.info(
+            f"✅ Transferred {transferred} new sessions, updated {updated} existing sessions"
+        )
         return transferred
 
     def transfer_auth_attempts(self, cowrie_session_id, new_session_id):
         """Transfer authentication attempts for a session"""
         source_cursor = self.source_conn.cursor(dictionary=True)
         dest_cursor = self.dest_conn.cursor()
+
+        # Get existing auth attempts for this session to avoid duplicates
+        dest_cursor.execute(
+            "SELECT timestamp, creds FROM AUTH_ATTEMPT WHERE session_id = %s",
+            (new_session_id,),
+        )
+        existing_auths = {(row[0], row[1]) for row in dest_cursor.fetchall()}
 
         query = """
         SELECT timestamp, success, username, password
@@ -275,9 +296,14 @@ class CowrieETLAdapter:
         source_cursor.execute(query, (cowrie_session_id,))
         auth_attempts = source_cursor.fetchall()
 
+        inserted = 0
         for auth in auth_attempts:
             status = "SUCCESS" if auth["success"] == 1 else "FAILURE"
             creds = f"{auth['username']}:{auth['password']}"
+
+            # Skip if this exact auth attempt already exists
+            if (auth["timestamp"], creds) in existing_auths:
+                continue
 
             query = """
             INSERT INTO AUTH_ATTEMPT (session_id, timestamp, status, creds)
@@ -286,6 +312,10 @@ class CowrieETLAdapter:
             dest_cursor.execute(
                 query, (new_session_id, auth["timestamp"], status, creds)
             )
+            inserted += 1
+
+        if inserted > 0:
+            logger.info(f"  ➕ Added {inserted} auth attempts")
 
         source_cursor.close()
         dest_cursor.close()
@@ -294,6 +324,13 @@ class CowrieETLAdapter:
         """Transfer commands executed in a session"""
         source_cursor = self.source_conn.cursor(dictionary=True)
         dest_cursor = self.dest_conn.cursor()
+
+        # Get existing commands for this session to avoid duplicates
+        dest_cursor.execute(
+            "SELECT timestamp, command_text FROM COMMAND WHERE session_id = %s",
+            (new_session_id,),
+        )
+        existing_commands = {(row[0], row[1]) for row in dest_cursor.fetchall()}
 
         query = """
         SELECT timestamp, input
@@ -304,12 +341,21 @@ class CowrieETLAdapter:
         source_cursor.execute(query, (cowrie_session_id,))
         commands = source_cursor.fetchall()
 
+        inserted = 0
         for cmd in commands:
+            # Skip if this exact command already exists
+            if (cmd["timestamp"], cmd["input"]) in existing_commands:
+                continue
+
             query = """
             INSERT INTO COMMAND (session_id, timestamp, command_text)
             VALUES (%s, %s, %s)
             """
             dest_cursor.execute(query, (new_session_id, cmd["timestamp"], cmd["input"]))
+            inserted += 1
+
+        if inserted > 0:
+            logger.info(f"  ➕ Added {inserted} commands")
 
         source_cursor.close()
         dest_cursor.close()
@@ -318,6 +364,13 @@ class CowrieETLAdapter:
         """Transfer file downloads for a session"""
         source_cursor = self.source_conn.cursor(dictionary=True)
         dest_cursor = self.dest_conn.cursor()
+
+        # Get existing downloads for this session to avoid duplicates
+        dest_cursor.execute(
+            "SELECT timestamp, filehash FROM DOWNLOAD WHERE session_id = %s",
+            (new_session_id,),
+        )
+        existing_downloads = {(row[0], row[1]) for row in dest_cursor.fetchall()}
 
         query = """
         SELECT timestamp, shasum, output_file
@@ -328,7 +381,12 @@ class CowrieETLAdapter:
         source_cursor.execute(query, (cowrie_session_id,))
         downloads = source_cursor.fetchall()
 
+        inserted = 0
         for download in downloads:
+            # Skip if this exact download already exists
+            if (download["timestamp"], download["shasum"]) in existing_downloads:
+                continue
+
             query = """
             INSERT INTO DOWNLOAD (session_id, timestamp, filehash, file_name)
             VALUES (%s, %s, %s, %s)
@@ -342,17 +400,16 @@ class CowrieETLAdapter:
                     download["output_file"],
                 ),
             )
+            inserted += 1
+
+        if inserted > 0:
+            logger.info(f"  ➕ Added {inserted} downloads")
 
         source_cursor.close()
         dest_cursor.close()
 
     def run_continuous(self, interval=30):
-        """
-        Run ETL continuously at specified interval
-
-        Args:
-            interval: seconds between runs
-        """
+        """Run ETL continuously at specified interval"""
         logger.info(f"🔄 Starting continuous ETL (interval: {interval}s)")
 
         while True:
@@ -364,10 +421,10 @@ class CowrieETLAdapter:
                 transferred = self.transfer_sessions()
 
                 if transferred > 0:
-                    logger.info(f"✅ Transfer complete: {transferred} sessions")
+                    logger.info(f"🎉 Transfer cycle complete!")
 
             except Exception as e:
-                logger.error(f"❌ Error during transfer: {e}")
+                logger.error(f"❌ Error during transfer: {e}", exc_info=True)
 
             time.sleep(interval)
 
@@ -379,7 +436,7 @@ class CowrieETLAdapter:
             logger.info(f"✅ Transfer complete: {transferred} sessions")
             return transferred
         except Exception as e:
-            logger.error(f"❌ Error during transfer: {e}")
+            logger.error(f"❌ Error during transfer: {e}", exc_info=True)
             return 0
 
     def close(self):
@@ -399,7 +456,7 @@ def main():
     # Cowrie database configuration (Docker container)
     source_config = {
         "host": "localhost",
-        "port": 3307,
+        "port": 3307,  # Changed port for Docker MySQL
         "user": "cowrie",
         "password": "cowriepassword",
         "database": "cowrie",
@@ -408,9 +465,9 @@ def main():
     # Your local database configuration
     dest_config = {
         "host": "localhost",
-        "port": 3306,  # Change if different
-        "user": "root",
-        "password": "root123",
+        "port": 3306,
+        "user": "etl_service",  # Using ETL user for proper permissions
+        "password": "etlpass",
         "database": "honeypot_data",
     }
 
@@ -424,10 +481,10 @@ def main():
 
     try:
         # Option 1: Run once
-        #adapter.run_once()
+        # adapter.run_once()
 
-        # Option 2: Run continuously (uncomment to use)
-        adapter.run_continuous(interval=30)
+        # Option 2: Run continuously
+        adapter.run_continuous(interval=1)
 
     except KeyboardInterrupt:
         logger.info("\n⏸️  Stopping ETL adapter...")
