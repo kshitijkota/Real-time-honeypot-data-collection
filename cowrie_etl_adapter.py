@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Cowrie to Custom Schema ETL Adapter - OPTIMIZED VERSION
-Only processes NEW sessions instead of all sessions every time
+Cowrie to Custom Schema ETL Adapter - FINAL FIXED VERSION
+Properly handles new sessions and updates existing ones with new commands
 """
 
 import mysql.connector
@@ -64,6 +64,12 @@ class CowrieETLAdapter:
         """Establish connections to both databases"""
         try:
             self.source_conn = mysql.connector.connect(**self.source_config)
+            # ensure we read committed data and not a stale transaction snapshot
+            try:
+                # Not all connectors require this attribute, but it's harmless if present
+                self.source_conn.autocommit = True
+            except Exception:
+                pass
             logger.info("✅ Connected to Cowrie database")
 
             self.dest_conn = mysql.connector.connect(**self.dest_config)
@@ -146,9 +152,47 @@ class CowrieETLAdapter:
 
         return attacker_id
 
+    def _ensure_fresh_source_cursor(self):
+        """
+        Ensure we have a fresh source connection/cursor for each cycle so we
+        read newly committed rows. This recreates the source connection if it
+        is not connected, and always creates a new cursor.
+        """
+        # Reconnect if connection is missing or closed
+        try:
+            if not self.source_conn or not getattr(self.source_conn, "is_connected", lambda: True)() :
+                logger.debug("🔁 Source connection not connected, reconnecting...")
+                # close if exists
+                try:
+                    if self.source_conn:
+                        self.source_conn.close()
+                except Exception:
+                    pass
+                self.source_conn = mysql.connector.connect(**self.source_config)
+                try:
+                    self.source_conn.autocommit = True
+                except Exception:
+                    pass
+
+        except Exception:
+            # Fallback: attempt to reconnect anyway
+            try:
+                self.source_conn = mysql.connector.connect(**self.source_config)
+                try:
+                    self.source_conn.autocommit = True
+                except Exception:
+                    pass
+            except Exception as e:
+                logger.error(f"Failed to (re)connect to source DB: {e}")
+                raise
+
+        # Always return a new cursor so we don't reuse a stale cursor
+        return self.source_conn.cursor(dictionary=True)
+
     def transfer_sessions(self):
-        """Transfer ONLY NEW sessions from Cowrie to custom schema"""
-        source_cursor = self.source_conn.cursor(dictionary=True)
+        """Transfer sessions from Cowrie to custom schema"""
+        # Use a fresh cursor for this cycle to ensure we see new rows
+        source_cursor = self._ensure_fresh_source_cursor()
         dest_cursor = self.dest_conn.cursor()
 
         # Check if cowrie_session_id column exists
@@ -169,42 +213,37 @@ class CowrieETLAdapter:
             logger.warning(
                 "⚠️  Run: ALTER TABLE SESSION ADD COLUMN cowrie_session_id VARCHAR(50) UNIQUE;"
             )
-            dest_cursor.close()
-            source_cursor.close()
-            return 0
-
-        # Get list of Cowrie session IDs we've already processed
-        dest_cursor.execute(
-            "SELECT cowrie_session_id FROM SESSION WHERE cowrie_session_id IS NOT NULL"
-        )
-        existing_cowrie_ids = {row[0] for row in dest_cursor.fetchall()}
-        logger.info(f"🔍 Already processed {len(existing_cowrie_ids)} sessions")
-
-        # Get ONLY NEW sessions from Cowrie (ones we haven't seen before)
-        if existing_cowrie_ids:
-            placeholders = ",".join(["%s"] * len(existing_cowrie_ids))
-            query = f"""
-            SELECT id, ip, starttime, endtime
-            FROM sessions
-            WHERE id NOT IN ({placeholders})
-            ORDER BY starttime ASC
+            dest_cursor.execute(
+                """
+                SELECT s.session_id, s.attacker_id, s.start_time
+                FROM SESSION s
             """
-            source_cursor.execute(query, tuple(existing_cowrie_ids))
+            )
+            existing_sessions = {
+                (row[1], row[2]): row[0] for row in dest_cursor.fetchall()
+            }
         else:
-            # First run - get all sessions
-            query = """
-            SELECT id, ip, starttime, endtime
-            FROM sessions
-            ORDER BY starttime ASC
-            """
-            source_cursor.execute(query)
+            # Use Cowrie session IDs for tracking (proper method)
+            dest_cursor.execute(
+                "SELECT session_id, cowrie_session_id FROM SESSION WHERE cowrie_session_id IS NOT NULL"
+            )
+            existing_sessions = {row[1]: row[0] for row in dest_cursor.fetchall()}
 
+        logger.info(f"🔍 Found {len(existing_sessions)} existing session records")
+
+        # Get sessions from Cowrie - ORDER BY ASC to process oldest first
+        query = """
+        SELECT id, ip, starttime, endtime
+        FROM sessions
+        ORDER BY starttime ASC
+        """
+        source_cursor.execute(query)
         sessions = source_cursor.fetchall()
-        logger.info(f"📥 Found {len(sessions)} NEW sessions to process")
+        logger.info(f"📥 Found {len(sessions)} total sessions in Cowrie DB")
 
         transferred = 0
+        updated = 0
 
-        # Process only NEW sessions
         for session in sessions:
             cowrie_session_id = session["id"]
             raw_ip = session.get("ip")
@@ -215,38 +254,83 @@ class CowrieETLAdapter:
             # Get or create attacker
             attacker_id = self.insert_or_get_attacker(ip_address)
 
-            # Insert NEW session
-            logger.info(f"✨ New session: {cowrie_session_id}")
+            # Check if session exists and get its ID
+            existing_session_id = None
+            if has_cowrie_id_column:
+                existing_session_id = existing_sessions.get(cowrie_session_id)
+            else:
+                existing_session_id = existing_sessions.get((attacker_id, start_time))
 
-            query = """
-            INSERT INTO SESSION (attacker_id, start_time, end_time, cowrie_session_id)
-            VALUES (%s, %s, %s, %s)
-            """
-            dest_cursor.execute(
-                query, (attacker_id, start_time, end_time, cowrie_session_id)
-            )
+            if existing_session_id:
+                # Session exists - update it with new commands/auth/downloads
+                logger.info(
+                    f"🔄 Updating session {cowrie_session_id} (ID: {existing_session_id})"
+                )
 
-            new_session_id = dest_cursor.lastrowid
-            logger.info(f"✅ Created session as ID {new_session_id}")
+                # Update end_time if it changed
+                if end_time:
+                    dest_cursor.execute(
+                        "UPDATE SESSION SET end_time = %s WHERE session_id = %s",
+                        (end_time, existing_session_id),
+                    )
 
-            # Transfer related data
-            self.transfer_auth_attempts(cowrie_session_id, new_session_id)
-            self.transfer_commands(cowrie_session_id, new_session_id)
-            self.transfer_downloads(cowrie_session_id, new_session_id)
+                # Transfer new data for this session
+                self.transfer_auth_attempts(cowrie_session_id, existing_session_id)
+                self.transfer_commands(cowrie_session_id, existing_session_id)
+                self.transfer_downloads(cowrie_session_id, existing_session_id)
+                updated += 1
+            else:
+                # New session - insert it
+                logger.info(f"✨ New session found: {cowrie_session_id}")
 
-            transferred += 1
+                if has_cowrie_id_column:
+                    query = """
+                    INSERT INTO SESSION (attacker_id, start_time, end_time, cowrie_session_id)
+                    VALUES (%s, %s, %s, %s)
+                    """
+                    dest_cursor.execute(
+                        query, (attacker_id, start_time, end_time, cowrie_session_id)
+                    )
+                else:
+                    query = """
+                    INSERT INTO SESSION (attacker_id, start_time, end_time)
+                    VALUES (%s, %s, %s)
+                    """
+                    dest_cursor.execute(query, (attacker_id, start_time, end_time))
+
+                new_session_id = dest_cursor.lastrowid
+                logger.info(
+                    f"✅ Created session {cowrie_session_id} as ID {new_session_id}"
+                )
+
+                # Transfer related data
+                self.transfer_auth_attempts(cowrie_session_id, new_session_id)
+                self.transfer_commands(cowrie_session_id, new_session_id)
+                self.transfer_downloads(cowrie_session_id, new_session_id)
+
+                transferred += 1
 
         self.dest_conn.commit()
         source_cursor.close()
         dest_cursor.close()
 
-        logger.info(f"✅ Transferred {transferred} new sessions")
+        logger.info(
+            f"✅ Transferred {transferred} new sessions, updated {updated} existing sessions"
+        )
         return transferred
 
     def transfer_auth_attempts(self, cowrie_session_id, new_session_id):
         """Transfer authentication attempts for a session"""
-        source_cursor = self.source_conn.cursor(dictionary=True)
+        # recreate cursor to get fresh data
+        source_cursor = self._ensure_fresh_source_cursor()
         dest_cursor = self.dest_conn.cursor()
+
+        # Get existing auth attempts for this session to avoid duplicates
+        dest_cursor.execute(
+            "SELECT timestamp, creds FROM AUTH_ATTEMPT WHERE session_id = %s",
+            (new_session_id,),
+        )
+        existing_auths = {(row[0], row[1]) for row in dest_cursor.fetchall()}
 
         query = """
         SELECT timestamp, success, username, password
@@ -261,6 +345,10 @@ class CowrieETLAdapter:
         for auth in auth_attempts:
             status = "SUCCESS" if auth["success"] == 1 else "FAILURE"
             creds = f"{auth['username']}:{auth['password']}"
+
+            # Skip if this exact auth attempt already exists
+            if (auth["timestamp"], creds) in existing_auths:
+                continue
 
             query = """
             INSERT INTO AUTH_ATTEMPT (session_id, timestamp, status, creds)
@@ -279,8 +367,16 @@ class CowrieETLAdapter:
 
     def transfer_commands(self, cowrie_session_id, new_session_id):
         """Transfer commands executed in a session"""
-        source_cursor = self.source_conn.cursor(dictionary=True)
+        # recreate cursor to get fresh data
+        source_cursor = self._ensure_fresh_source_cursor()
         dest_cursor = self.dest_conn.cursor()
+
+        # Get existing commands for this session to avoid duplicates
+        dest_cursor.execute(
+            "SELECT timestamp, command_text FROM COMMAND WHERE session_id = %s",
+            (new_session_id,),
+        )
+        existing_commands = {(row[0], row[1]) for row in dest_cursor.fetchall()}
 
         query = """
         SELECT timestamp, input
@@ -293,6 +389,10 @@ class CowrieETLAdapter:
 
         inserted = 0
         for cmd in commands:
+            # Skip if this exact command already exists
+            if (cmd["timestamp"], cmd["input"]) in existing_commands:
+                continue
+
             query = """
             INSERT INTO COMMAND (session_id, timestamp, command_text)
             VALUES (%s, %s, %s)
@@ -308,8 +408,16 @@ class CowrieETLAdapter:
 
     def transfer_downloads(self, cowrie_session_id, new_session_id):
         """Transfer file downloads for a session"""
-        source_cursor = self.source_conn.cursor(dictionary=True)
+        # recreate cursor to get fresh data
+        source_cursor = self._ensure_fresh_source_cursor()
         dest_cursor = self.dest_conn.cursor()
+
+        # Get existing downloads for this session to avoid duplicates
+        dest_cursor.execute(
+            "SELECT timestamp, filehash FROM DOWNLOAD WHERE session_id = %s",
+            (new_session_id,),
+        )
+        existing_downloads = {(row[0], row[1]) for row in dest_cursor.fetchall()}
 
         query = """
         SELECT timestamp, shasum, output_file
@@ -322,6 +430,10 @@ class CowrieETLAdapter:
 
         inserted = 0
         for download in downloads:
+            # Skip if this exact download already exists
+            if (download["timestamp"], download["shasum"]) in existing_downloads:
+                continue
+
             query = """
             INSERT INTO DOWNLOAD (session_id, timestamp, filehash, file_name)
             VALUES (%s, %s, %s, %s)
@@ -349,16 +461,29 @@ class CowrieETLAdapter:
 
         while True:
             try:
-                if not self.source_conn or not self.source_conn.is_connected():
-                    logger.warning("⚠️  Reconnecting to databases...")
+                # If dest disconnected, reconnect everything
+                if not self.dest_conn or not self.dest_conn.is_connected():
+                    logger.warning("⚠️  Destination DB disconnected, reconnecting both DBs...")
                     self.connect_databases()
+
+                # Ensure source_conn exists and is connected before transfer
+                if not self.source_conn or not getattr(self.source_conn, "is_connected", lambda: True)():
+                    logger.warning("⚠️  Source DB disconnected, reconnecting...")
+                    try:
+                        if self.source_conn:
+                            self.source_conn.close()
+                    except Exception:
+                        pass
+                    self.source_conn = mysql.connector.connect(**self.source_config)
+                    try:
+                        self.source_conn.autocommit = True
+                    except Exception:
+                        pass
 
                 transferred = self.transfer_sessions()
 
                 if transferred > 0:
                     logger.info(f"🎉 Transfer cycle complete!")
-                else:
-                    logger.info(f"😴 No new sessions")
 
             except Exception as e:
                 logger.error(f"❌ Error during transfer: {e}", exc_info=True)
@@ -378,13 +503,19 @@ class CowrieETLAdapter:
 
     def close(self):
         """Close database connections"""
-        if self.source_conn and self.source_conn.is_connected():
-            self.source_conn.close()
-            logger.info("Closed source connection")
+        if self.source_conn and getattr(self.source_conn, "is_connected", lambda: True)():
+            try:
+                self.source_conn.close()
+                logger.info("Closed source connection")
+            except Exception:
+                pass
 
         if self.dest_conn and self.dest_conn.is_connected():
-            self.dest_conn.close()
-            logger.info("Closed destination connection")
+            try:
+                self.dest_conn.close()
+                logger.info("Closed destination connection")
+            except Exception:
+                pass
 
 
 def main():
@@ -417,7 +548,10 @@ def main():
         return
 
     try:
-        # Run continuously - checks every 1 second
+        # Option 1: Run once
+        # adapter.run_once()
+
+        # Option 2: Run continuously
         adapter.run_continuous(interval=1)
 
     except KeyboardInterrupt:
