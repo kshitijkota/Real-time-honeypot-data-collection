@@ -1,5 +1,7 @@
 import os
 import functools
+import threading
+import time
 from flask import (
     Flask,
     jsonify,
@@ -140,11 +142,11 @@ def get_session():
     return jsonify({"loggedIn": False})
 
 
-# --- API Endpoints for Dashboard ---
+# --- API Query Helper ---
 
 
 def execute_query(query, params=None):
-    """Helper function to run a SELECT query and return results."""
+    """Helper function to run a SELECT or CALL query and return results."""
     conn = get_db_connection_for_session()
     if not conn:
         return jsonify({"error": "Database session error"}), 500
@@ -156,9 +158,12 @@ def execute_query(query, params=None):
         else:
             cursor.execute(query)
 
-        results = cursor.fetchall()
-        return jsonify(results)
-
+        if query.strip().upper().startswith("SELECT"):
+            results = cursor.fetchall()
+            return jsonify(results)
+        else:
+            conn.commit()
+            return jsonify({"success": True})
     except Error as e:
         return jsonify({"error": str(e)}), 500
     finally:
@@ -167,10 +172,12 @@ def execute_query(query, params=None):
             conn.close()
 
 
+# --- Dashboard Queries ---
+
+
 @app.route("/api/query/top-countries")
 @login_required
 def get_top_countries():
-    # 1. Top Attacker Countries
     query = "SELECT country, total_sessions FROM COUNTRY_STATS ORDER BY total_sessions DESC LIMIT 10;"
     return execute_query(query)
 
@@ -178,7 +185,6 @@ def get_top_countries():
 @app.route("/api/query/top-credentials")
 @login_required
 def get_top_credentials():
-    # 2. Most Common Credentials (Stored Procedure)
     conn = get_db_connection_for_session()
     if not conn:
         return jsonify({"error": "Database session error"}), 500
@@ -200,7 +206,10 @@ def get_top_credentials():
 @app.route("/api/query/attack-trends")
 @login_required
 def get_attack_trends():
-    # 3. Attack Frequency Over Time
+    # Update daily trends first
+    execute_query("CALL UpdateDailyTrends();")
+
+    # Fetch latest data
     query = "SELECT day, total_sessions, total_auth_attempts FROM ATTACK_TRENDS ORDER BY day ASC;"
     return execute_query(query)
 
@@ -208,7 +217,6 @@ def get_attack_trends():
 @app.route("/api/query/auth-stats")
 @login_required
 def get_auth_stats():
-    # 4. Success vs Failed Attempts
     query = "SELECT status, total FROM AUTH_STATS ORDER BY total DESC;"
     return execute_query(query)
 
@@ -216,7 +224,6 @@ def get_auth_stats():
 @app.route("/api/query/top-malware")
 @login_required
 def get_top_malware():
-    # 5. Top Downloaded Malware Hashes (View)
     query = "SELECT * FROM TopMalware LIMIT 10;"
     return execute_query(query)
 
@@ -224,7 +231,6 @@ def get_top_malware():
 @app.route("/api/query/command-frequency")
 @login_required
 def get_command_frequency():
-    # 6. Command Frequency per Attacker (Stored Procedure - INTERACTIVE)
     ip_address = request.args.get("ip")
     if not ip_address:
         return jsonify({"error": "ip parameter is required"}), 400
@@ -250,8 +256,11 @@ def get_command_frequency():
 @app.route("/api/query/avg-session-duration")
 @login_required
 def get_avg_session_duration():
-    # 7. Average Session Duration per Country (View)
-    query = "SELECT country, ROUND(avg_duration_sec / 60, 2) AS avg_duration_mins FROM AvgSessionDurationByCountry ORDER BY avg_duration_mins DESC LIMIT 10;"
+    query = """
+    SELECT country, ROUND(avg_duration_sec / 60, 2) AS avg_duration_mins
+    FROM AvgSessionDurationByCountry
+    ORDER BY avg_duration_mins DESC LIMIT 10;
+    """
     return execute_query(query)
 
 
@@ -274,7 +283,7 @@ def get_active_attackers():
         results = cursor.fetchall()
         return jsonify(results)
     except Error as e:
-        print(f"SQL Error: {e}")  # Check your Flask console for this
+        print(f"SQL Error: {e}")
         return jsonify({"error": str(e)}), 500
     finally:
         if conn and conn.is_connected(): 
@@ -282,12 +291,9 @@ def get_active_attackers():
             conn.close()
 
 
-
-
 @app.route("/api/query/attacker-rankings")
 @login_required
 def get_attacker_rankings():
-    # 9. Window Function Analysis (View)
     query = "SELECT * FROM AttackerRankings WHERE rank_by_sessions <= 10;"
     return execute_query(query)
 
@@ -295,7 +301,6 @@ def get_attacker_rankings():
 @app.route("/api/query/hourly-trends")
 @login_required
 def get_hourly_trends():
-    # 10. Time-Based Hourly Trends (View)
     query = "SELECT * FROM AttackFrequencyHourly ORDER BY hour_slot ASC;"
     return execute_query(query)
 
@@ -307,47 +312,89 @@ def get_hourly_trends():
 @login_required
 @admin_required
 def delete_attacker():
-    """
-    Deletes all records associated with an attacker IP.
-    This demonstrates the ADMIN role's CUD privileges.
-    """
     ip_address = request.json.get("ip")
     if not ip_address:
         return jsonify({"error": "IP address is required"}), 400
 
-    conn = get_db_connection_for_session()
-    if not conn:
-        return jsonify({"error": "Database session error"}), 500
+    # --- Local MySQL Connection ---
+    local_conn = get_db_connection_for_session()
+    if not local_conn:
+        return jsonify({"error": "Local database session error"}), 500
+
+    # --- Cowrie Container MySQL Connection ---
+    try:
+        cowrie_conn = mysql.connector.connect(
+            host="localhost",      # or container host name if Docker networked
+            port=3307,             # <-- replace with your Cowrie container’s MySQL port
+            user="cowrie",           # Cowrie MySQL user
+            password="cowriepassword",  # Cowrie MySQL password
+            database="cowrie"      # Cowrie DB name
+        )
+    except Error as e:
+        print(f"[!] Cowrie DB connection error: {e}")
+        cowrie_conn = None
 
     try:
-        cursor = conn.cursor()
-        # The admin role (granted in roles.sql) has DELETE privileges
-        # The analyst role does not, so this would fail for them.
-        cursor.execute("DELETE FROM ATTACKER WHERE ip_address = %s", (ip_address,))
-        conn.commit()
-        deleted_count = cursor.rowcount
-        cursor.close()
-        conn.close()
+        # --- 1 Delete from Cowrie honeypot database ---
+        if cowrie_conn:
+            cowrie_cursor = cowrie_conn.cursor()
+            # Remove sessions and related data linked to this IP
+            cowrie_cursor.execute("DELETE FROM sessions WHERE ip = %s", (ip_address,))
+            cowrie_conn.commit()
+            cowrie_deleted = cowrie_cursor.rowcount
+            cowrie_cursor.close()
+        else:
+            cowrie_deleted = 0
+        # --- 2 Delete from LOCAL honeypot_data database ---
+        local_cursor = local_conn.cursor()
+        local_cursor.execute("DELETE FROM ATTACKER WHERE ip_address = %s", (ip_address,))
+        local_conn.commit()
+        local_deleted = local_cursor.rowcount
+        local_cursor.close()
 
-        if deleted_count == 0:
-            return jsonify(
-                {"success": True, "message": f"No attacker found with IP {ip_address}"}
-            )
-
-        return jsonify(
-            {
-                "success": True,
-                "message": f"Successfully deleted attacker {ip_address} and all related data (sessions, commands, etc.)",
-            }
+        message = (
+            f"Deleted attacker {ip_address} — "
+            f"{local_deleted} local entries, {cowrie_deleted} in Cowrie DB."
         )
+        print(f"[+] {message}")
+        return jsonify({"success": True, "message": message})
 
     except Error as e:
-        conn.rollback()
+        if local_conn and local_conn.is_connected():
+            local_conn.rollback()
+        if cowrie_conn and cowrie_conn.is_connected():
+            cowrie_conn.rollback()
         return jsonify({"error": str(e)}), 500
+
     finally:
-        if conn and conn.is_connected():
-            conn.close()
+        if local_conn and local_conn.is_connected():
+            local_conn.close()
+        if cowrie_conn and cowrie_conn.is_connected():
+            cowrie_conn.close()
+
+# --- Background Trend Updater Thread ---
+
+
+def update_trends_periodically():
+    """Runs the stored procedure every 5 minutes in background."""
+    while True:
+        try:
+            conn, err = get_db_connection("honeypot_admin", "your_admin_password")
+            if conn and not err:
+                cursor = conn.cursor()
+                cursor.execute("CALL UpdateDailyTrends();")
+                conn.commit()
+                cursor.close()
+                conn.close()
+                print("[+] Attack trends updated.")
+            else:
+                print(f"[!] Could not connect to DB: {err}")
+        except Exception as e:
+            print(f"[!] Error updating trends: {e}")
+        time.sleep(300)  # 5 minutes
 
 
 if __name__ == "__main__":
+    # Start the background updater thread
+    threading.Thread(target=update_trends_periodically, daemon=True).start()
     app.run(debug=True, port=5000)
