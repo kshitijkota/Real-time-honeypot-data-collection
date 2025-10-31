@@ -206,12 +206,29 @@ def get_top_credentials():
 @app.route("/api/query/attack-trends")
 @login_required
 def get_attack_trends():
-    # Update daily trends first
-    execute_query("CALL UpdateDailyTrends();")
+    """
+    Fetches daily attack trends by calling the GetDailyTrends stored procedure.
+    Returns the data directly to the frontend without modifying the database.
+    """
+    conn = get_db_connection_for_session()
+    if not conn:
+        return jsonify({"error": "Database session error"}), 500
 
-    # Fetch latest data
-    query = "SELECT day, total_sessions, total_auth_attempts FROM ATTACK_TRENDS ORDER BY day ASC;"
-    return execute_query(query)
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.callproc("GetDailyTrends")
+        daily_trends = []
+        for result in cursor.stored_results():
+            daily_trends = result.fetchall()
+
+        # Return the trends directly to the frontend
+        return jsonify(daily_trends)
+    except Error as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn and conn.is_connected():
+            cursor.close()
+            conn.close()
 
 
 @app.route("/api/query/auth-stats")
@@ -372,29 +389,29 @@ def delete_attacker():
         if cowrie_conn and cowrie_conn.is_connected():
             cowrie_conn.close()
 
-# --- Background Trend Updater Thread ---
+# # --- Background Trend Updater Thread ---
 
 
-def update_trends_periodically():
-    """Runs the stored procedure every 5 minutes in background."""
-    while True:
-        try:
-            conn, err = get_db_connection("honeypot_admin", "your_admin_password")
-            if conn and not err:
-                cursor = conn.cursor()
-                cursor.execute("CALL UpdateDailyTrends();")
-                conn.commit()
-                cursor.close()
-                conn.close()
-                print("[+] Attack trends updated.")
-            else:
-                print(f"[!] Could not connect to DB: {err}")
-        except Exception as e:
-            print(f"[!] Error updating trends: {e}")
-        time.sleep(300)  # 5 minutes
+# def update_trends_periodically():
+#     """Runs the stored procedure every 5 minutes in background."""
+#     while True:
+#         try:
+#             conn, err = get_db_connection("honeypot_admin", "your_admin_password")
+#             if conn and not err:
+#                 cursor = conn.cursor()
+#                 cursor.execute("CALL UpdateDailyTrends();")
+#                 conn.commit()
+#                 cursor.close()
+#                 conn.close()
+#                 print("[+] Attack trends updated.")
+#             else:
+#                 print(f"[!] Could not connect to DB: {err}")
+#         except Exception as e:
+#             print(f"[!] Error updating trends: {e}")
+#         time.sleep(300)  # 5 minutes
 
 
 if __name__ == "__main__":
     # Start the background updater thread
-    threading.Thread(target=update_trends_periodically, daemon=True).start()
+    # threading.Thread(target=update_trends_periodically, daemon=True).start()
     app.run(debug=True, port=5000)

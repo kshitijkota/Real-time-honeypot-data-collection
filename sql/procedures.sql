@@ -28,17 +28,23 @@ END;
 DELIMITER ;
 
 DELIMITER //
-CREATE PROCEDURE UpdateDailyTrends()
+CREATE PROCEDURE GetDailyTrends()
 BEGIN
-    INSERT INTO ATTACK_TRENDS (day, total_sessions, total_auth_attempts)
-    VALUES (
-        CURDATE(),
-        (SELECT COUNT(*) FROM SESSION WHERE DATE(start_time) = CURDATE()),
-        (SELECT COUNT(*) FROM AUTH_ATTEMPT WHERE DATE(timestamp) = CURDATE())
-    )
-    ON DUPLICATE KEY UPDATE
-        total_sessions = VALUES(total_sessions),
-        total_auth_attempts = VALUES(total_auth_attempts);
+    SELECT 
+        day,
+        COUNT(DISTINCT session_id) AS total_sessions,
+        SUM(total_auth_attempts) AS total_auth_attempts
+    FROM (
+        SELECT 
+            DATE(s.start_time) AS day,
+            s.session_id,
+            (SELECT COUNT(*) 
+             FROM AUTH_ATTEMPT 
+             WHERE DATE(timestamp) = DATE(s.start_time)) AS total_auth_attempts
+        FROM SESSION s
+    ) AS trends
+    GROUP BY day
+    ORDER BY day ASC;
 END;
 //
 DELIMITER ;
