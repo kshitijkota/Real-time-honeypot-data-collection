@@ -1,5 +1,23 @@
+-- View for actual country session counts (direct calculation)
+CREATE VIEW COUNTRY_STATS_VIEW AS
+SELECT
+    g.country,
+    COUNT(DISTINCT s.session_id) AS total_sessions
+FROM SESSION s
+JOIN ATTACKER a ON s.attacker_id = a.attacker_id
+JOIN GEOIP_CACHE g ON a.geoip_id = g.geoip_id
+GROUP BY g.country;
+
+-- View for auth stats (direct calculation)
+CREATE VIEW AUTH_STATS_VIEW AS
+SELECT
+    status,
+    COUNT(*) AS total
+FROM AUTH_ATTEMPT
+GROUP BY status;
+
 CREATE VIEW AttackFrequencyHourly AS
-SELECT 
+SELECT
     DATE_FORMAT(timestamp, '%Y-%m-%d %H:00:00') AS hour_slot,
     COUNT(*) AS total_attempts
 FROM AUTH_ATTEMPT
@@ -16,7 +34,7 @@ GROUP BY filehash
 ORDER BY times_downloaded DESC;
 
 CREATE VIEW AvgSessionDurationByCountry AS
-SELECT 
+SELECT
     g.country,
     AVG(TIMESTAMPDIFF(SECOND, s.start_time, s.end_time)) AS avg_duration_sec
 FROM SESSION s
@@ -35,7 +53,7 @@ WHERE EXISTS (
 );
 
 CREATE VIEW AttackerRankings AS
-SELECT 
+SELECT
     a.ip_address,
     COUNT(s.session_id) AS total_sessions,
     RANK() OVER (ORDER BY COUNT(s.session_id) DESC) AS rank_by_sessions

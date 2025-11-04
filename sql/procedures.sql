@@ -1,7 +1,7 @@
 DELIMITER //
 CREATE PROCEDURE GetTopCredentials(IN limit_n INT)
 BEGIN
-    SELECT 
+    SELECT
         SUBSTRING_INDEX(creds, ':', 1) AS username,
         SUBSTRING_INDEX(creds, ':', -1) AS password,
         COUNT(*) AS attempts
@@ -30,20 +30,13 @@ DELIMITER ;
 DELIMITER //
 CREATE PROCEDURE GetDailyTrends()
 BEGIN
-    SELECT 
-        day,
-        COUNT(DISTINCT session_id) AS total_sessions,
-        SUM(total_auth_attempts) AS total_auth_attempts
-    FROM (
-        SELECT 
-            DATE(s.start_time) AS day,
-            s.session_id,
-            (SELECT COUNT(*) 
-             FROM AUTH_ATTEMPT 
-             WHERE DATE(timestamp) = DATE(s.start_time)) AS total_auth_attempts
-        FROM SESSION s
-    ) AS trends
-    GROUP BY day
+    SELECT
+        DATE(s.start_time) AS day,
+        COUNT(DISTINCT s.session_id) AS total_sessions,
+        COUNT(a.auth_id) AS total_auth_attempts
+    FROM SESSION s
+    LEFT JOIN AUTH_ATTEMPT a ON s.session_id = a.session_id AND DATE(a.timestamp) = DATE(s.start_time)
+    GROUP BY DATE(s.start_time)
     ORDER BY day ASC;
 END;
 //

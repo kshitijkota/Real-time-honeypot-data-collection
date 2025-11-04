@@ -178,7 +178,7 @@ def execute_query(query, params=None):
 @app.route("/api/query/top-countries")
 @login_required
 def get_top_countries():
-    query = "SELECT country, total_sessions FROM COUNTRY_STATS ORDER BY total_sessions DESC LIMIT 10;"
+    query = "SELECT country, total_sessions FROM COUNTRY_STATS_VIEW ORDER BY total_sessions DESC LIMIT 10;"
     return execute_query(query)
 
 
@@ -234,7 +234,7 @@ def get_attack_trends():
 @app.route("/api/query/auth-stats")
 @login_required
 def get_auth_stats():
-    query = "SELECT status, total FROM AUTH_STATS ORDER BY total DESC;"
+    query = "SELECT status, total FROM AUTH_STATS_VIEW ORDER BY total DESC;"
     return execute_query(query)
 
 
@@ -281,13 +281,13 @@ def get_avg_session_duration():
     return execute_query(query)
 
 
-@app.route('/api/query/active-attackers')
+@app.route("/api/query/active-attackers")
 @login_required
 def get_active_attackers():
     conn = get_db_connection_for_session()
-    if not conn: 
+    if not conn:
         return jsonify({"error": "Database session error"}), 500
-    
+
     try:
         cursor = conn.cursor(dictionary=True)
         query = """
@@ -303,7 +303,7 @@ def get_active_attackers():
         print(f"SQL Error: {e}")
         return jsonify({"error": str(e)}), 500
     finally:
-        if conn and conn.is_connected(): 
+        if conn and conn.is_connected():
             cursor.close()
             conn.close()
 
@@ -341,11 +341,11 @@ def delete_attacker():
     # --- Cowrie Container MySQL Connection ---
     try:
         cowrie_conn = mysql.connector.connect(
-            host="localhost",      # or container host name if Docker networked
-            port=3307,             # <-- replace with your Cowrie container’s MySQL port
-            user="cowrie",           # Cowrie MySQL user
+            host="localhost",  # or container host name if Docker networked
+            port=3307,  # <-- replace with your Cowrie container’s MySQL port
+            user="cowrie",  # Cowrie MySQL user
             password="cowriepassword",  # Cowrie MySQL password
-            database="cowrie"      # Cowrie DB name
+            database="cowrie",  # Cowrie DB name
         )
     except Error as e:
         print(f"[!] Cowrie DB connection error: {e}")
@@ -364,7 +364,9 @@ def delete_attacker():
             cowrie_deleted = 0
         # --- 2 Delete from LOCAL honeypot_data database ---
         local_cursor = local_conn.cursor()
-        local_cursor.execute("DELETE FROM ATTACKER WHERE ip_address = %s", (ip_address,))
+        local_cursor.execute(
+            "DELETE FROM ATTACKER WHERE ip_address = %s", (ip_address,)
+        )
         local_conn.commit()
         local_deleted = local_cursor.rowcount
         local_cursor.close()
@@ -388,6 +390,7 @@ def delete_attacker():
             local_conn.close()
         if cowrie_conn and cowrie_conn.is_connected():
             cowrie_conn.close()
+
 
 # # --- Background Trend Updater Thread ---
 
