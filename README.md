@@ -1,4 +1,4 @@
-# Real-time Honeypot Data Collection & DBMS Dashboard
+# Real-time Honeypot Data Collection
 
 A comprehensive honeypot system that collects SSH/Telnet attack data using [Cowrie](https://github.com/cowrie/cowrie), stores it in MySQL, and visualizes it through an interactive web dashboard with role-based access control.
 
