@@ -453,6 +453,6 @@ Interactive analytics
 
 ## 👤 Authors
 
-**Sampriti Saha** 
 **Kshitij Koushik Kota** 
-Semester 5 DBMS Mini-Project
+**Sampriti Saha** 
+
